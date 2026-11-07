@@ -1,0 +1,68 @@
+<!doctype html><meta charset="utf-8"><title>正六角形ブラウザテスト</title><style>body{font:16px sans-serif;padding:20px}iframe{width:1200px;height:850px;border:1px solid #ccc}li{margin:8px} .fail{color:red}</style><h1>ブラウザ自動テスト</h1><p id="summary">実行中</p><ol id="results"></ol><iframe id="app"></iframe><script type="module">
+import {exportPNG,prepareExportSVG} from '../src/export.js';
+import {createAccessRecorder} from '../src/access-counter.js';
+import {PAIRING_TYPES} from '../src/pairing-types.js';
+import {hexagonStructure,pieces,pieceMarkPoints,path} from '../src/geometry.js?v=marks-1.4';
+import {createPairs} from '../src/pairing.js';
+const out=document.querySelector('#results');let passed=0,failed=0;
+const assert=(v,m)=>{if(!v)throw Error(m)};
+async function test(name,fn){const li=document.createElement('li');try{await fn();li.textContent='PASS '+name;passed++;}catch(e){li.textContent='FAIL '+name+': '+e.message;li.className='fail';failed++;}out.append(li);}
+const frame=document.querySelector('iframe');let html=await (await fetch('../index.html')).text();html=html.replace('<head>','<head><base href="../"><script>window.accessCalls=[];window.fetch=(...args)=>{window.accessCalls.push(args);return Promise.reject(Error("offline test"));};<\/script>');
+const loaded=new Promise(r=>frame.onload=r);frame.srcdoc=html;await loaded;const d=frame.contentDocument,$=s=>d.querySelector(s),click=s=>{const e=$(s);if(e.click)e.click();else e.dispatchEvent(new frame.contentWindow.MouseEvent('click',{bubbles:true}));},change=(s,value)=>{$(s).value=value;$(s).dispatchEvent(new Event('change'));};
+await test('初期表示・アクセス1回・通信失敗でも操作可能',()=>{assert($('#board svg'),'SVG');assert(frame.contentWindow.accessCalls.length===1,'record count');assert(new URL(frame.contentWindow.accessCalls[0][0]).searchParams.get('app')==='hexagon-tiling','app');assert($('#backs').children.length===6,'pieces');});
+await test('固定5タイプ・辺の組み合わせ・A/B/Cを表示',()=>{
+ assert($('#matching').options.length===5,'option count');
+ for(const type of [...PAIRING_TYPES].reverse()){
+ change('#matching',type.matching);assert($('#preview svg'),'preview');assert($('#pairs').children.length===3,'pairs');
+ assert($('#matching').selectedOptions[0].textContent.startsWith(`タイプ${type.id}：`),'stable number');
+ for(const [i,[a,b]] of type.pairs.entries()){
+ assert($('#matching-description').textContent.includes(`${String.fromCharCode(65+i)} = ${a}–${b}`),'description');
+ assert($('#pairs').children[i].textContent.includes(`辺${a} ＋ 辺${b}`),'members');
+ }
+ }
+});
+await test('全5タイプ×8分割パターン：6/8/10/12ピースとペア再構成',()=>{
+ for(const type of PAIRING_TYPES)for(let mask=0;mask<8;mask++){
+ change('#matching',type.matching);
+ for(let i=0;i<3;i++)if(mask&(1<<i))click('#half-'+i);
+ const n=[0,1,2].filter(i=>mask&(1<<i)).length;
+ assert($('#backs').children.length===6+2*n,'pieces');assert($('#pairs').children.length===3+n,'pairs');assert($('#preview svg'),'valid');
+ for(const [i,edges] of type.pairs.entries())if(mask&(1<<i))for(const edge of edges)assert([...$('#pairs').children].some(e=>e.textContent.includes(`辺${edge}・区間1 ＋ 辺${edge}・区間2`)),'split pair');
+ }
+});
+await test('半分の独立表裏・形の制約と交換',()=>{click('#piece-back-0');assert(!$('#preview svg'),'invalid');click('#piece-back-1');assert($('#preview svg'),'valid');assert($('#assembly-status').textContent.includes('移動'),'relocation');});
+await test('回転6回・反転2回・手と表裏',()=>{click('#settings-reset');click('[data-tile="0"]');const before=$('[data-tile="0"]').outerHTML;for(let i=0;i<6;i++)click('[data-tile="0"]');assert($('[data-tile="0"]').outerHTML===before,'rotation');click('#flip');assert($('[data-tile="0"] [data-hand]').getAttribute('fill')==='#B7D9E8','hand back');assert($('[data-tile="0"] [data-piece-background]').getAttribute('fill')==='#DCE2E6','back');click('#flip');assert($('[data-tile="0"]').outerHTML===before,'flip twice');click('[data-tile="0"]');click('#flip');assert($('[data-tile="0"]').getAttribute('transform').includes('rotate(60) scale(-1'),'composition');});
+await test('対辺ペアは43辺すべて一致・警告OFFでも件数表示',()=>{click('#all-reset');change('#matching',7);assert($('#status').textContent.includes('43辺が一致'),'matches');change('#matching',0);assert(d.querySelectorAll('[data-mismatch]').length===43,'warnings');click('#show-mismatches');assert(d.querySelectorAll('[data-mismatch]').length===0,'hidden');assert($('#status').textContent.includes('43辺が不一致'),'count remains');click('#show-mismatches');});
+await test('操作中にアクセス追加なし・再読み込み相当で1回',()=>{assert(frame.contentWindow.accessCalls.length===1,'extra call');let count=0;const send=()=>{count++};const first=createAccessRecorder(send);first();first();const reload=createAccessRecorder(send);reload();reload();assert(count===2,'reload');});
+await test('6/8/10/12ピースで拡大マークが完成タイルとタイリングで同一',()=>{
+ for(const mask of [0,1,3,7]){
+ click('#settings-reset');for(let i=0;i<3;i++)if(mask&(1<<i))click('#half-'+i);
+ const halves=[0,1,2].map(i=>!!(mask&(1<<i))),raw=hexagonStructure(0,halves);
+ const state={matching:0,halves,pairs:createPairs(raw.groups),backs:raw.raw.map(()=>false)};
+ state.pairs.forEach((pair,i)=>pair.mark=$('#pair-mark-'+i).value);
+ const active=pieces(state);
+ for(const p of active){
+ const expected=path(pieceMarkPoints(state,p));
+ assert($('#preview [data-piece-mark="'+p.index+'"]').getAttribute('d')===expected,'preview size');
+ assert($('#board [data-tile="0"] [data-piece-mark="'+p.index+'"]').getAttribute('d')===expected,'board size');
+ }
+ }
+});
+await test('6/8/10/12ピースのタイルPNG・全体PNG生成、拡大形状と手・警告を保持',async()=>{
+ for(const mask of [0,1,3,7]){
+ click('#settings-reset');for(let i=0;i<3;i++)if(mask&(1<<i))click('#half-'+i);
+ for(const [host,size] of [['preview',600],['board',1000]]){
+ const source=$('#'+host+' svg'),clean=prepareExportSVG(source,size);
+ assert(clean.querySelectorAll('[data-selection],[data-editor-selection]').length===0,'editor annotations');
+ assert(clean.querySelector('[data-hand]'),'hand retained');
+ if(host==='board')assert(clean.querySelector('[data-mismatch]'),'warnings retained');
+ assert(clean.querySelector('[data-piece-mark]').getAttribute('d')===source.querySelector('[data-piece-mark]').getAttribute('d'),'size retained');
+ const blob=await exportPNG(source,'hexagon-test-'+host+'-'+mask+'.png',size);
+ assert(blob.type==='image/png'&&blob.size>1000,'png');
+ const bytes=new Uint8Array(await blob.slice(0,24).arrayBuffer());assert(bytes[0]===137&&bytes[1]===80,'signature');
+ assert(new DataView(bytes.buffer).getUint32(16)===size,'width');
+ }
+ }
+});
+document.querySelector('#summary').textContent=`${passed}件成功 / ${failed}件失敗`;
+</script>
