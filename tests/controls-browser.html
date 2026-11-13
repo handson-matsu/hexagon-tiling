@@ -1,0 +1,57 @@
+<!doctype html><html lang="ja"><meta charset="utf-8"><title>操作性・レスポンシブテスト</title><style>body{font:15px sans-serif;padding:20px}li{margin:8px}.fail{color:#b42318}iframe{height:900px;border:0;display:block}</style><h1>操作性・レスポンシブテスト</h1><p id="summary">実行中</p><ol id="results"></ol><iframe id="app" title="テスト対象"></iframe><script type="module">
+import {prepareExportSVG,exportPNG} from '../src/export.js';
+const frame=document.querySelector('iframe'),out=document.querySelector('#results');let passed=0,failed=0;
+const assert=(value,message)=>{if(!value)throw Error(message);};
+async function test(name,run){const li=document.createElement('li');try{await run();passed++;li.textContent='PASS '+name;}catch(e){failed++;li.textContent='FAIL '+name+': '+e.message;li.className='fail';}out.append(li);}
+const html=(await (await fetch('../index.html',{cache:'no-store'})).text()).replace('<head>','<head><base href="../"><script>window.accessCalls=[];window.fetch=(...args)=>{window.accessCalls.push(args);return Promise.reject(Error("offline"));};<\/script>');
+const nextFrame=()=>new Promise(r=>frame.contentWindow.requestAnimationFrame(()=>frame.contentWindow.requestAnimationFrame(r)));
+let d;const $=s=>d.querySelector(s),all=s=>[...d.querySelectorAll(s)],rect=s=>$(s).getBoundingClientRect();
+const click=s=>{const e=$(s);if(e.click)e.click();else e.dispatchEvent(new frame.contentWindow.MouseEvent('click',{bubbles:true}));};
+const change=(s,v)=>{$(s).value=v;$(s).dispatchEvent(new Event('change'));};
+const faces=()=>{for(const [i,b]of all('[data-piece-face]').entries()){const back=$('#piece-back-'+i).checked;assert(b.getAttribute('aria-pressed')===String(back),'checkbox/button sync');assert(b.lastElementChild.textContent===(back?'裏':'表'),'face text');}};
+const showTile=async index=>{const box=rect('#board [data-tile="'+index+'"]');frame.contentWindow.scrollBy(0,box.top-200);await nextFrame();click('#board [data-tile="'+index+'"]');await nextFrame();};
+const visibleButton=()=>{const b=rect('#floating-flip'),board=rect('#board-shell'),w=frame.contentWindow;assert(!$('#floating-flip').hidden,'floating hidden');assert(b.width>=104&&b.height>=44,'touch size');assert(b.left>=Math.max(0,board.left)-1&&b.right<=Math.min(w.innerWidth,board.right)+1&&b.top>=0&&b.bottom<=w.innerHeight+1,'outside board/viewport');};
+for(const width of [1440,1024,900,768,390,320]){
+ frame.style.width=width+'px';const loaded=new Promise(r=>frame.onload=r);frame.srcdoc=html;await loaded;d=frame.contentDocument;
+ await test(`${width}px: 01/02/03の配置・横スクロールなし`,()=>{
+ const a=rect('aside.panel'),b=rect('.tile-panel'),c=rect('.tiling-panel');
+ if(width>=900){assert(Math.abs(a.top-b.top)<1&&Math.abs(b.top-c.top)<1,'not same row');assert(a.right<b.left&&b.right<c.left,'column order');}
+ else assert(a.bottom<=b.top&&b.bottom<=c.top,'stack order');
+ assert(d.documentElement.scrollWidth<=width+1,'horizontal overflow');
+ assert($('#preview').nextElementSibling===$('#piece-face-buttons'),'controls not immediately below preview');
+ });
+ await test(`${width}px: 6/8/10/12パーツの個別表裏・双方向同期・組立不可から復帰`,()=>{
+ for(const mask of [0,1,3,7]){
+ click('#settings-reset');for(let i=0;i<3;i++)if(mask&(1<<i))click('#half-'+i);
+ const n=6+2*[0,1,2].filter(i=>mask&(1<<i)).length;assert(all('[data-piece-face]').length===n,'piece count');
+ for(let i=0;i<n;i++){
+ click('[data-piece-face="'+i+'"]');faces();assert($('#piece-back-'+i).checked,'quick toggle');
+ click('#piece-back-'+i);faces();assert($('#preview svg'),'recovered');
+ }
+ }
+ // Independent half pieces remain operable while the assembly is invalid.
+ click('[data-piece-face="0"]');assert(!$('#preview svg'),'expected invalid assembly');
+ assert(all('[data-piece-face]').length===12,'buttons missing on invalid state');
+ click('[data-piece-face="1"]');faces();assert($('#preview svg'),'balanced halves did not assemble');click('#settings-reset');
+ });
+ await test(`${width}px: 近接反転・回転干渉なし・旧ボタン・端の位置補正・選択解除`,async()=>{
+ for(const index of [0,4,15,19]){
+ await showTile(index);visibleButton();const node=()=>$('#board [data-tile="'+index+'"]'),before=node().getAttribute('transform');
+ click('#floating-flip');visibleButton();assert(node().getAttribute('transform').includes('scale(-1 1)'),'flip');assert(node().getAttribute('transform').includes('rotate(0)'),'unwanted rotation');
+ click('#flip');assert(node().getAttribute('transform')===before,'legacy flip');
+ click('#board [data-tile="'+index+'"]');assert(node().getAttribute('transform').includes('rotate(60)'),'rotation');visibleButton();
+ d.querySelector('.tiling-panel h2').click();assert($('#floating-flip').hidden,'not hidden on deselection');
+ }
+ await showTile(0);frame.contentWindow.scrollTo(0,width>=900?d.documentElement.scrollHeight:0);await nextFrame();assert($('#floating-flip').hidden,'offscreen action not hidden');
+ click('#all-reset');assert($('#floating-flip').hidden,'reset left action');
+ });
+ await test(`${width}px: 保存SVGに操作UIなし・通信追加なし`,()=>{
+ for(const host of ['preview','board']){const svg=prepareExportSVG($('#'+host+' svg'),600);assert(!svg.querySelector('button,[data-piece-face],#floating-flip,[data-selection]'),'editor leaked');assert(svg.querySelector('[data-piece-mark]'),'marks missing');}
+ assert(frame.contentWindow.accessCalls.length===1,'extra access logging');
+ });
+}
+await test('追加UIを含む画面でPNG生成',async()=>{
+ for(const host of ['preview','board']){const blob=await exportPNG($('#'+host+' svg'),'hexagon-controls-'+host+'.png',600);assert(blob.type==='image/png'&&blob.size>1000,'PNG');}
+});
+document.querySelector('#summary').textContent=`${passed}件成功 / ${failed}件失敗`;
+</script></html>
